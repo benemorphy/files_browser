@@ -1447,10 +1447,11 @@ fn protect_latex(text: &str) -> (String, Vec<String>) {
             }
             if j < len {
                 j += 1; // skip }
-                // Search for \end{env}
                 let end_tag = format!("\\end{{{}}}", env);
-                if let Some(end_pos) = text[j..].find(&end_tag) {
-                    let end_abs = j + end_pos + end_tag.len();
+                // Search for \end{env} (字符安全: chars[]是字符索引, text[]是字节索引)
+                let tail: String = chars[j..].iter().collect();
+                if let Some(end_pos) = tail.find(&end_tag) {
+                    let end_abs = j + tail[..end_pos].chars().count() + end_tag.chars().count();
                     let expr: String = chars[i..end_abs].iter().collect();
                     exprs.push(expr);
                     out.push_str(&format!("<!--LATEX{}-->", exprs.len() - 1));
