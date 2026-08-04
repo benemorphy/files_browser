@@ -1,0 +1,19 @@
+# === Rust 构建产物 ===
+# 忽略所有 target 下的中间文件，但保留编译后的 exe
+/target/*
+!/target/release/
+/target/release/*
+!/target/release/*.exe
+
+# === 本地项目记忆（不属发布内容）===
+.proj_memory/
+
+# === 日志 ===
+*.log
+stderr*.log
+stdout*.log
+
+# === 编辑器 ===
+.idea/
+.vscode/
+*.swp

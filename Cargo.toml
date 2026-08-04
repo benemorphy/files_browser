@@ -1,0 +1,8 @@
+[package]
+name = "files_browser"
+version = "0.3.0"
+edition = "2021"
+
+[dependencies]
+pulldown-cmark = "0.10"
+lopdf = "0.44"
