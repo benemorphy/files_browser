@@ -997,10 +997,12 @@ fn handle(mut s: TcpStream, served: &Path, proj: &Path, base_path: &str) {
             opts.insert(Options::ENABLE_TASKLISTS);
             let detabbed = strip_indent(&content);
             let (protected_text, latex_exprs) = protect_latex(&detabbed);
-            let parser = Parser::new_ext(&protected_text, opts);
+            let (protected_html, html_frags) = protect_html_fences(&protected_text);
+            let parser = Parser::new_ext(&protected_html, opts);
             let mut html_buf = String::new();
             html::push_html(&mut html_buf, parser);
-            restore_latex(&html_buf, &latex_exprs)
+            let restored = restore_latex(&html_buf, &latex_exprs);
+            restore_html(&restored, &html_frags)
         } else if ext == "ipynb" {
             render_ipynb(&content)
         } else if ext == "tex" {
@@ -1092,11 +1094,13 @@ fn handle(mut s: TcpStream, served: &Path, proj: &Path, base_path: &str) {
                 opts.insert(Options::ENABLE_TASKLISTS);
                 let detabbed = strip_indent(&text);
                 let (protected_text, latex_exprs) = protect_latex(&detabbed);
-                let parser = Parser::new_ext(&protected_text, opts);
+                let (protected_html, html_frags) = protect_html_fences(&protected_text);
+                let parser = Parser::new_ext(&protected_html, opts);
                 let mut html_buf = String::new();
                 html::push_html(&mut html_buf, parser);
                 let restored = restore_latex(&html_buf, &latex_exprs);
-                format!("<article>{}</article>", restored)
+                let restored_html = restore_html(&restored, &html_frags);
+                format!("<article>{}</article>", restored_html)
             } else if ext == "ipynb" {
                 render_ipynb(&text)
             } else if ext == "tex" {
@@ -1311,6 +1315,57 @@ fn walk(dir: &Path, name: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Protect fenced code blocks tagged ```html before markdown parsing.
+/// Their content is pulled out verbatim so it renders as real HTML later
+/// (instead of being escaped inside <pre><code>).
+/// Returns (protected_text, list_of_raw_html_fragments).
+fn protect_html_fences(text: &str) -> (String, Vec<String>) {
+    let mut exprs: Vec<String> = Vec::new();
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+        let is_open = trimmed.starts_with("```") && {
+            let info = trimmed[3..].trim();
+            !info.is_empty() && info.split_whitespace().next().unwrap_or("").eq_ignore_ascii_case("html")
+        };
+        if is_open {
+            let mut j = i + 1;
+            let mut closed = false;
+            while j < lines.len() {
+                if lines[j].trim().starts_with("```") {
+                    closed = true;
+                    break;
+                }
+                j += 1;
+            }
+            if closed {
+                let content = lines[i + 1..j].join("\n");
+                exprs.push(content);
+                out.push(format!("<!--RAWHTML{}-->", exprs.len() - 1));
+                i = j + 1;
+                continue;
+            }
+        }
+        out.push(lines[i].to_string());
+        i += 1;
+    }
+    (out.join("\n"), exprs)
+}
+
+/// Restore ```html fenced fragments that were pulled out by protect_html_fences.
+/// The placeholder is an HTML comment emitted verbatim by pulldown-cmark,
+/// so replacing it with the raw fragment injects real HTML.
+fn restore_html(html: &str, exprs: &[String]) -> String {
+    let mut result = html.to_string();
+    for (i, expr) in exprs.iter().enumerate() {
+        let placeholder = format!("<!--RAWHTML{}-->", i);
+        result = result.replace(&placeholder, expr);
+    }
+    result
 }
 
 /// Protect LaTeX $...$ and $$...$$ before markdown parsing.
@@ -1687,11 +1742,12 @@ fn render_ipynb(text: &str) -> String {
                         opts.insert(Options::ENABLE_TABLES);
                         opts.insert(Options::ENABLE_STRIKETHROUGH);
                         let (pro, lex) = protect_latex(&source);
-                        let parser = Parser::new_ext(&pro, opts);
+                        let (pro2, hfx) = protect_html_fences(&pro);
+                        let parser = Parser::new_ext(&pro2, opts);
                         let mut buf = String::new();
                         html::push_html(&mut buf, parser);
                         let restored = restore_latex(&buf, &lex);
-                        html.push_str(&format!("<div class=\"nb-md\">{}</div>", restored));
+                        html.push_str(&format!("<div class=\"nb-md\">{}</div>", restore_html(&restored, &hfx)));
                     } else {
                         // code cell
                         html.push_str(&format!("<pre><code class=\"language-python\">{}</code></pre>", esc(&source)));
