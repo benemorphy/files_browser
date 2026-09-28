@@ -22,12 +22,12 @@ use std::thread;
 
 const DEFAULT_PORT: u16 = 8899;
 
-const SUPPORTED_EXTS: &[&str] = &["md", "rs", "py", "toml", "lock", "json", "yaml", "yml", "txt", "ini", "cfg", "log", "c", "h", "ipynb", "tex", "js", "css", "png", "jpg", "jpeg", "gif", "svg", "pdf"];
+const SUPPORTED_EXTS: &[&str] = &["md", "rs", "py", "toml", "lock", "json", "yaml", "yml", "txt", "ini", "cfg", "log", "c", "h", "ipynb", "tex", "js", "css", "png", "jpg", "jpeg", "gif", "svg", "webp", "pdf"];
 
 
 fn is_image_ext(path: &str) -> bool {
     let e = path.rsplit('.').next().unwrap_or("").to_lowercase();
-    matches!(e.as_str(), "png" | "jpg" | "jpeg" | "gif" | "svg" | "ico")
+    matches!(e.as_str(), "png" | "jpg" | "jpeg" | "gif" | "svg" | "webp" | "ico")
 }
 
 fn is_supported(p: &Path) -> bool {
@@ -245,8 +245,8 @@ body{{font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-seri
 <script>
 (function(){{
 var HLJS_LANG={{'rs':'rust','py':'python','lock':'toml','yml':'yaml','js':'javascript','ts':'typescript','sh':'bash','ps1':'powershell','log':'plaintext','c':'c','h':'c','toml':'toml','json':'json','yaml':'yaml','ini':'ini','cfg':'ini','txt':'plaintext','ipynb':'json','tex':'latex'}};
-var SUPPORTED_EXTS=['md','rs','py','toml','lock','json','yaml','yml','txt','ini','cfg','log','c','h','ipynb','tex','js','css','png','jpg','jpeg','gif','svg','pdf'];
-var EXT_LABELS={{'md':'Markdown','rs':'Rust','py':'Python','toml':'TOML','lock':'TOML','json':'JSON','yaml':'YAML','yml':'YAML','txt':'Plain Text','ini':'INI','cfg':'INI','log':'Log','c':'C','h':'C Header','ipynb':'Jupyter Notebook','tex':'LaTeX','js':'JavaScript','css':'CSS','png':'PNG Image','jpg':'JPEG Image','jpeg':'JPEG Image','gif':'GIF Image','svg':'SVG Image','pdf':'PDF'}};
+var SUPPORTED_EXTS=['md','rs','py','toml','lock','json','yaml','yml','txt','ini','cfg','log','c','h','ipynb','tex','js','css','png','jpg','jpeg','gif','svg','webp','pdf'];
+var EXT_LABELS={{'md':'Markdown','rs':'Rust','py':'Python','toml':'TOML','lock':'TOML','json':'JSON','yaml':'YAML','yml':'YAML','txt':'Plain Text','ini':'INI','cfg':'INI','log':'Log','c':'C','h':'C Header','ipynb':'Jupyter Notebook','tex':'LaTeX','js':'JavaScript','css':'CSS','png':'PNG Image','jpg':'JPEG Image','jpeg':'JPEG Image','gif':'GIF Image','svg':'SVG Image','webp':'WebP Image','pdf':'PDF'}};
 
 var currentFile=null,currentExt=null,isModified=false;
 var sidebar=document.getElementById('sidebar');
@@ -307,7 +307,7 @@ function closeFind(){{document.getElementById('find-bar').style.display='none';e
 window.doFind=doFind;window.doReplace=doReplace;window.doReplaceAll=doReplaceAll;window.findKey=findKey;window.closeFind=closeFind;
 
 // === Load file (called from init and save) ===
-var IMG_EXTS=['png','jpg','jpeg','gif','svg'];
+var IMG_EXTS=['png','jpg','jpeg','gif','svg','webp'];
 function loadFile(filename,dir){{
   var ext=filename.split('.').pop().toLowerCase();
   // 图片文件: 直接显示, 不通过api/raw加载文本
@@ -477,7 +477,7 @@ preview.innerHTML=html;
   }}else if(currentExt==='tex'){{
     var rawHtml='<h1>'+escHtml(currentFile?currentFile.filename:'')+'</h1>'+texToHtml(text);
     preview.innerHTML=renderHtml(rawHtml);
-  }}else if(['png','jpg','jpeg','gif','svg'].indexOf(currentExt)>=0){{
+  }}else if(['png','jpg','jpeg','gif','svg','webp'].indexOf(currentExt)>=0){{
     // 图片文件: 显示图像预览
     var imgPath=currentFile.dir?currentFile.dir+'/'+currentFile.filename:currentFile.filename;
     preview.innerHTML='<h1>'+escHtml(currentFile.filename)+'</h1><img src="'+escHtml(imgPath)+'" style="max-width:100%;border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,.15);">';
@@ -514,7 +514,8 @@ function fixImgPaths(){{
   if(d){{
     preview.querySelectorAll('img').forEach(function(img){{
       var src=img.getAttribute('src');
-      if(src&&!src.includes('?dir=')&&!src.startsWith('http')&&!src.startsWith('data:')){{
+      // 跳过：已带 ?dir= / 外链 / data: / 已解析为根绝对路径（服务端已归一化 ../ 的情况）
+      if(src&&!src.includes('?dir=')&&!src.startsWith('http')&&!src.startsWith('data:')&&!src.startsWith('/')){{
         img.src=src+'?dir='+encodeURIComponent(d);
       }}
     }});
@@ -1133,10 +1134,11 @@ fn handle(mut s: TcpStream, served: &Path, proj: &Path, base_path: &str) {
                     rest = &rest[p+5..];
                     if let Some(cq) = rest.find('"') {
                         let sv = &rest[..cq];
-                        if !sv.starts_with("http") && !sv.starts_with("data:") && !sv.contains('?') {
-                            out.push_str(sv);
-                            out.push_str("?dir=");
-                            out.push_str(&dir_val);
+                        if !sv.starts_with("http") && !sv.starts_with("data:") && !sv.starts_with('/') && !sv.contains('?') {
+                            // 相对路径：先按 (dir, src) 归一化（处理 ../），再输出为「相对服务根」的绝对 URL。
+                            // 若原样带 ../ 交给浏览器，浏览器会在发请求前把 .. 归一化掉，服务端就无法再解析。
+                            let norm = norm_rel_join(&dir_val, sv);
+                            out.push_str(&format!("{}/{}", base_path, url_encode(&norm)));
                         } else {
                             out.push_str(sv);
                         }
@@ -1173,13 +1175,21 @@ fn handle(mut s: TcpStream, served: &Path, proj: &Path, base_path: &str) {
     } else {
         let dir_param = q.get("dir").map(|s| s.as_str()).unwrap_or("");
         // Try serving as static file for image extensions
-        if path.ends_with(".png") || path.ends_with(".jpg") || path.ends_with(".gif") || path.ends_with(".svg") || path.ends_with(".ico") {
+        if path.ends_with(".png") || path.ends_with(".jpg") || path.ends_with(".gif") || path.ends_with(".svg") || path.ends_with(".webp") || path.ends_with(".ico") {
             // 优先使用 dir 参数（来自 sidebar 链接直接导航）
             let mut sfp = if !dir_param.is_empty() {
                 served.join(dir_param).join(&path)
             } else {
                 served.join(&path)
             };
+            // 兜底：把 dir + path 归一化后再解析（处理 ../ 情形，如 docs/sub + ../assets/x.png）
+            if !sfp.is_file() {
+                let norm = norm_rel_join(dir_param, &path);
+                if !norm.is_empty() {
+                    let cand = served.join(&norm);
+                    if cand.is_file() { sfp = cand; }
+                }
+            }
             // Try CWD's ./docs/ as fallback (for auto-start with D:/ serving)
             if !sfp.is_file() && Path::new("./docs").join(&path).is_file() {
                 sfp = Path::new("./docs").join(&path);
@@ -1197,7 +1207,7 @@ fn handle(mut s: TcpStream, served: &Path, proj: &Path, base_path: &str) {
                 if let Ok(mut sf) = std::fs::File::open(&sfp) {
                     if sf.read_to_end(&mut sfbuf).is_ok() {
                         let sext = path.rsplit('.').next().unwrap_or("").to_lowercase();
-                        let sct = match sext.as_str() { "png" => "image/png", "jpg"|"jpeg" => "image/jpeg", "gif" => "image/gif", "svg" => "image/svg+xml", _ => "application/octet-stream" };
+                        let sct = match sext.as_str() { "png" => "image/png", "jpg"|"jpeg" => "image/jpeg", "gif" => "image/gif", "svg" => "image/svg+xml", "webp" => "image/webp", _ => "application/octet-stream" };
                         send(&mut s, 200, sct, &sfbuf);
                         return;
                     }
@@ -1279,6 +1289,20 @@ fn cur_root(served: &Path, proj: &Path, q: &HashMap<String, String>) -> PathBuf 
     if dir.is_empty() || dir == "." { return served.to_path_buf(); }
     let resolved = served.join(dir).canonicalize().unwrap_or_else(|_| served.to_path_buf());
     if resolved.starts_with(proj) { resolved } else { proj.to_path_buf() }
+}
+
+/// 把 (dir, rel) 拼接后归一化：处理 "." / ".."（".." 弹栈，越界则丢弃）。
+/// 返回相对 served 根的路径，例如 ("docs/sub", "../assets/a.webp") -> "docs/assets/a.webp"
+fn norm_rel_join(dir: &str, rel: &str) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for seg in dir.split(['/', '\\']).chain(rel.split(['/', '\\'])) {
+        match seg {
+            "" | "." => {}
+            ".." => { parts.pop(); }
+            s => parts.push(s.to_string()),
+        }
+    }
+    parts.join("/")
 }
 
 fn rel_p(target: &Path, served: &Path, proj: &Path) -> String {
